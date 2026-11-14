@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: UnifiedNativeBags335
+## Notes: Unified bags, bank, guild bank, and Native Reagents storage
+## Author: Hisha / ChatGPT
+## Version: 1.0.0
+## SavedVariables: UnifiedBags335DB
+NativeReagentsAdapter.lua
+UnifiedNativeBags335.lua
