@@ -8,6 +8,8 @@ local BANK_BAG_COUNT = NUM_BANKBAGSLOTS or 7
 local BUTTON_SIZE = 36
 local BUTTON_GAP = 5
 local GRID_LEFT = 18
+local ITEM_INFO_RETRY_INTERVAL = 0.5
+local ITEM_INFO_MAX_RETRIES = 20
 
 UB.bankOpen = false
 UB.guildBankOpen = false
@@ -18,6 +20,9 @@ UB.displays = {}
 UB.searchText = { bags = "", bank = "", guild = "" }
 UB.reagentAPI = _G.UnifiedNativeBags335NativeReagents
 UB.disabledForConflict = false
+UB.pendingItemInfo = {}
+UB.exhaustedItemInfo = {}
+UB.itemInfoRetryElapsed = 0
 
 local DEFAULTS = {
     bagColumns = 10,
@@ -69,6 +74,14 @@ end
 local function AddCount(tbl, itemID, amount)
     if not itemID or not amount or amount <= 0 then return end
     tbl[itemID] = (tbl[itemID] or 0) + amount
+end
+
+-- UIPanelScrollFrameTemplate in Wrath builds and looks up its scrollbar,
+-- buttons, and thumb through $parent globals.  It therefore requires a named
+-- owner; an anonymous frame makes ScrollFrame_OnLoad and every later range
+-- update concatenate a nil frame name.
+local function CreateNamedScrollFrame(parent, name)
+    return CreateFrame("ScrollFrame", name, parent, "UIPanelScrollFrameTemplate")
 end
 
 local function ScanContainers(containerIDs)
@@ -195,12 +208,16 @@ function UB:BuildReagentItems(searchText)
     if not self.reagentAPI or not self.reagentAPI.GetVirtualItems then return items end
     for itemID, amount in pairs(self.reagentAPI:GetVirtualItems() or {}) do
         itemID, amount = tonumber(itemID), tonumber(amount)
-        if itemID and amount and amount > 0 and MatchesSearch(searchText, itemID, nil) then
+        if itemID and amount and amount > 0 then
             local name, link, _, _, _, _, _, _, _, texture = GetItemInfo(itemID)
-            table.insert(items, {
-                kind = "reagent", itemID = itemID, link = link, texture = texture,
-                count = amount, name = name or ("Item " .. itemID)
-            })
+            if not texture and GetItemIcon then texture = GetItemIcon(itemID) end
+            if not name or not texture then self:TrackMissingItemInfo(itemID) end
+            if MatchesSearch(searchText, itemID, link) then
+                table.insert(items, {
+                    kind = "reagent", itemID = itemID, link = link, texture = texture,
+                    count = amount, name = name or ("Item " .. itemID)
+                })
+            end
         end
     end
     table.sort(items, function(a, b)
@@ -209,6 +226,46 @@ function UB:BuildReagentItems(searchText)
         return an < bn
     end)
     return items
+end
+
+function UB:TrackMissingItemInfo(itemID)
+    itemID = tonumber(itemID)
+    if not itemID or self.exhaustedItemInfo[itemID] then return end
+    if self.pendingItemInfo[itemID] == nil then self.pendingItemInfo[itemID] = 0 end
+end
+
+function UB:ResetMissingItemRetries()
+    self.pendingItemInfo = {}
+    self.exhaustedItemInfo = {}
+    self.itemInfoRetryElapsed = 0
+end
+
+function UB:RetryMissingItemInfo(elapsed)
+    if not self.bankDisplay or self.bankDisplay.view ~= "reagents" or
+        not self.bankDisplay.frame:IsShown() or not next(self.pendingItemInfo) then
+        self.itemInfoRetryElapsed = 0
+        return
+    end
+
+    self.itemInfoRetryElapsed = self.itemInfoRetryElapsed + (elapsed or 0)
+    if self.itemInfoRetryElapsed < ITEM_INFO_RETRY_INTERVAL then return end
+    self.itemInfoRetryElapsed = 0
+
+    local resolved = false
+    for itemID, attempts in pairs(self.pendingItemInfo) do
+        local name, _, _, _, _, _, _, _, _, texture = GetItemInfo(itemID)
+        if not texture and GetItemIcon then texture = GetItemIcon(itemID) end
+        if name and texture then
+            self.pendingItemInfo[itemID] = nil
+            resolved = true
+        elseif attempts + 1 >= ITEM_INFO_MAX_RETRIES then
+            self.pendingItemInfo[itemID] = nil
+            self.exhaustedItemInfo[itemID] = true
+        else
+            self.pendingItemInfo[itemID] = attempts + 1
+        end
+    end
+    if resolved then self:QueueRefresh() end
 end
 
 function UB:ReagentStatusText()
@@ -914,7 +971,7 @@ function UB:CreateDisplay(key, title, positionKey, hasTabs)
     end
     display.gridTop = gridTop
 
-    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    local scroll = CreateNamedScrollFrame(f, frameName .. "ScrollFrame")
     display.scroll = scroll
     scroll:SetPoint("TOPLEFT", GRID_LEFT, gridTop)
     scroll:SetPoint("BOTTOMRIGHT", -35, 18)
@@ -1532,7 +1589,7 @@ function UB:CreateGuildDisplay()
         b:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    local scroll = CreateNamedScrollFrame(f, "UnifiedNativeBags335GuildBankScrollFrame")
     display.scroll = scroll
     scroll:SetPoint("TOPLEFT", GRID_LEFT, -92)
     scroll:SetPoint("BOTTOMRIGHT", -35, 55)
@@ -1815,7 +1872,8 @@ UB:RegisterEvent("ADDON_LOADED")
 UB:RegisterEvent("MERCHANT_SHOW")
 UB:RegisterEvent("MERCHANT_CLOSED")
 
-UB:SetScript("OnUpdate", function(self)
+UB:SetScript("OnUpdate", function(self, elapsed)
+    self:RetryMissingItemInfo(elapsed)
     if self.bankShowPending then
         self.bankShowPending = false
         self:ShowBags()
@@ -1860,6 +1918,7 @@ UB:SetScript("OnEvent", function(self, event, ...)
 
     if event == "BANKFRAME_OPENED" then
         self.bankOpen = true
+        self:ResetMissingItemRetries()
         self:AttachReagentAPI()
         self:CacheBags()
         self:CacheBank()
@@ -1945,6 +2004,11 @@ UB:SetScript("OnEvent", function(self, event, ...)
     end
 
     if event == "GET_ITEM_INFO_RECEIVED" then
+        local itemID = tonumber((...))
+        if itemID then
+            self.pendingItemInfo[itemID] = nil
+            self.exhaustedItemInfo[itemID] = nil
+        end
         self:QueueRefresh()
         return
     end
