@@ -69,6 +69,11 @@ function Adapter:IsBankOpen()
     return self.api and self.api.IsBankOpen and self.api.IsBankOpen() or false
 end
 
+function Adapter:SetBankView(view)
+    if not self.api or type(self.api.SetBankView) ~= "function" then return false end
+    return self.api.SetBankView(view) and true or false
+end
+
 function Adapter:GetStatus()
     return self.api and self.api.GetStatus and self.api.GetStatus() or "unavailable"
 end

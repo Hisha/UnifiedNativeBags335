@@ -20,7 +20,7 @@ class IntegrationContractTests(unittest.TestCase):
         for method in (
             "GetItems", "GetQuantity", "Deposit", "DepositAll", "Withdraw",
             "GetAutoDeposit", "SetAutoDeposit", "RegisterCallback",
-            "RegisterPresentation", "IsBankOpen", "GetStatus",
+            "RegisterPresentation", "IsBankOpen", "SetBankView", "GetStatus",
         ):
             self.assertRegex(ADAPTER, rf"\b{method}\b")
         self.assertNotIn("SendAddonMessage", ADAPTER)

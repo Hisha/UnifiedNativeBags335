@@ -1249,7 +1249,15 @@ end
 
 function UB:SetBankView(view)
     if not self.bankOpen or not self.bankDisplay then return end
-    if view == "reagents" and not self.reagentAPI then return end
+    if view == "reagents" then
+        -- Physical inventory buttons retain ContainerFrameItemButtonTemplate's
+        -- inherited OnClick handler. Native Reagents wraps that handler and
+        -- consults its own public bank-view state before intercepting a click,
+        -- so the alternative presentation must keep that state synchronized.
+        if not self.reagentAPI or not self.reagentAPI:SetBankView(view) then return end
+    elseif self.reagentAPI then
+        self.reagentAPI:SetBankView("bank")
+    end
     self.bankDisplay.view = view
     self.bankDisplay.scroll:SetVerticalScroll(0)
     self:ApplyDisplayGeometry(self.bankDisplay)
@@ -1944,6 +1952,7 @@ UB:SetScript("OnEvent", function(self, event, ...)
         self:CancelVirtualDrag()
         self.bankDisplay.frame:Hide()
         self.bankDisplay.view = "bank"
+        if self.reagentAPI then self.reagentAPI:SetBankView("bank") end
         self:UpdateAutoDepositControl()
         self:UpdateReagentControls()
         return

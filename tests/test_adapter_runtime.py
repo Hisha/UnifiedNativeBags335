@@ -11,6 +11,7 @@ HARNESS = r'''
 local calls = { deposits = {}, withdrawals = {}, auto = {} }
 local callback
 local presentation
+local bankView = "bank"
 local items = { [123] = 75 }
 
 NativeReagents = {
@@ -21,6 +22,11 @@ NativeReagents = {
     IsAvailable = function() return true end,
     IsReady = function() return true end,
     IsBankOpen = function() return true end,
+    SetBankView = function(value)
+        if value ~= "bank" and value ~= "reagents" then return false end
+        bankView = value
+        return true
+    end,
     GetStatus = function() return "ready" end,
     GetLastError = function() return nil end,
     GetItems = function() return items end,
@@ -50,6 +56,8 @@ local adapter = UnifiedNativeBags335NativeReagents
 assert(adapter:Attach(owner))
 assert(presentation and presentation.addon == "UnifiedNativeBags335")
 assert(adapter:GetVirtualItems()[123] == 75)
+assert(adapter:SetBankView("reagents") and bankView == "reagents")
+assert(adapter:SetBankView("bank") and bankView == "bank")
 
 assert(adapter:Deposit(123, 40))
 assert(calls.deposits[1][1] == 123 and calls.deposits[1][2] == 40)

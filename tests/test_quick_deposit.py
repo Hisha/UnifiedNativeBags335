@@ -145,5 +145,157 @@ end }
         self.assertIn("OpenStackSplitFrame(button.count, button", click)
 
 
+class InheritedContainerClickRuntimeTests(unittest.TestCase):
+    """Exercise the real physical-inventory path used in the live client."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.set_bank_view = lua_function(
+            "function UB:SetBankView(view)",
+            "function UB:ShowBags",
+        )
+
+    def run_click_model(self, actions, assertions, deposit_result="true"):
+        run_lua(
+            r'''
+local nativeView = "bank"
+local nativeBankOpen = true
+local quickCalls, useCalls, modifiedCalls, secureCalls = 0, 0, 0, 0
+local depositResult = DEPOSIT_RESULT
+
+NativeReagents = {}
+function NativeReagents.SetBankView(view)
+    if view ~= "bank" and view ~= "reagents" then return false end
+    nativeView = view
+    return true
+end
+function NativeReagents.IsReagentBankViewActive()
+    return nativeBankOpen and nativeView == "reagents"
+end
+function NativeReagents.DepositInventoryItem(bag, slot)
+    quickCalls = quickCalls + 1
+    assert(bag == 2 and slot == 7)
+    return depositResult
+end
+
+function UseContainerItem(bag, slot)
+    useCalls = useCalls + 1
+    assert(bag == 2 and slot == 7)
+end
+
+-- Native Reagents retains Blizzard's inherited container handler and wraps it.
+local function StockContainerFrameItemButton_OnClick(button, mouseButton)
+    if mouseButton == "RightButton" then UseContainerItem(button:GetParent():GetID(), button:GetID()) end
+end
+local function ContainerFrameItemButton_OnClick(button, mouseButton)
+    local parent = button:GetParent()
+    if mouseButton == "RightButton" and NativeReagents.IsReagentBankViewActive() and
+        NativeReagents.DepositInventoryItem(parent:GetID(), button:GetID()) then
+        return
+    end
+    return StockContainerFrameItemButton_OnClick(button, mouseButton)
+end
+
+local parent = { GetID = function() return 2 end }
+local button = {
+    GetParent = function() return parent end,
+    GetID = function() return 7 end,
+}
+local function DispatchClick(mouseButton, modified)
+    -- ContainerFrameItemButtonTemplate routes modifiers to a different script.
+    if modified then modifiedCalls = modifiedCalls + 1
+    else ContainerFrameItemButton_OnClick(button, mouseButton) end
+    -- No SecureActionButton attributes exist on this template/button, so
+    -- there is no independent post-OnClick item action to execute.
+    local secureType = nil
+    if secureType then secureCalls = secureCalls + 1 end
+end
+
+local adapter = {
+    SetBankView = function(_, view) return NativeReagents.SetBankView(view) end,
+}
+UB = {
+    bankOpen = true,
+    reagentAPI = adapter,
+    bankDisplay = {
+        view = "bank",
+        scroll = { SetVerticalScroll = function() end },
+    },
+    ApplyDisplayGeometry = function() end,
+    RefreshDisplay = function() end,
+}
+'''.replace("DEPOSIT_RESULT", deposit_result)
+            + self.set_bank_view
+            + actions
+            + assertions
+        )
+
+    def test_mismatched_addon_and_native_views_reproduce_ordinary_bank_transfer(self):
+        self.run_click_model(
+            '\nUB.bankDisplay.view = "reagents"\nDispatchClick("RightButton", false)\n',
+            "assert(nativeView == 'bank' and quickCalls == 0 and useCalls == 1)",
+        )
+
+    def test_view_sync_allows_reagent_deposit_without_ordinary_transfer(self):
+        self.run_click_model(
+            '\nUB:SetBankView("reagents")\nDispatchClick("RightButton", false)\n',
+            "assert(nativeView == 'reagents' and quickCalls == 1 and useCalls == 0 and secureCalls == 0)",
+        )
+
+    def test_deposit_rejection_falls_through_inherited_handler_once(self):
+        self.run_click_model(
+            '\nUB:SetBankView("reagents")\nDispatchClick("RightButton", false)\n',
+            "assert(quickCalls == 1 and useCalls == 1 and secureCalls == 0)",
+            deposit_result="false",
+        )
+
+    def test_non_reagent_server_response_preserves_ordinary_bank_fallback(self):
+        self.run_click_model(
+            r'''
+UB:SetBankView("reagents")
+DispatchClick("RightButton", false)
+-- Native Reagents owns this asynchronous NOT_REAGENT fallback after it
+-- revalidates the source slot; model the accepted public API contract here.
+UseContainerItem(2, 7)
+''',
+            "assert(quickCalls == 1 and useCalls == 1 and secureCalls == 0)",
+        )
+
+    def test_switching_back_to_bank_restores_ordinary_banking(self):
+        self.run_click_model(
+            '\nUB:SetBankView("reagents")\nUB:SetBankView("bank")\nDispatchClick("RightButton", false)\n',
+            "assert(nativeView == 'bank' and quickCalls == 0 and useCalls == 1)",
+        )
+
+    def test_modifier_click_bypasses_quick_deposit_and_ordinary_use(self):
+        self.run_click_model(
+            '\nUB:SetBankView("reagents")\nDispatchClick("RightButton", true)\n',
+            "assert(modifiedCalls == 1 and quickCalls == 0 and useCalls == 0 and secureCalls == 0)",
+        )
+
+    def test_bank_closed_uses_normal_inherited_inventory_behavior(self):
+        self.run_click_model(
+            '\nUB:SetBankView("reagents")\nnativeBankOpen = false\nDispatchClick("RightButton", false)\n',
+            "assert(quickCalls == 0 and useCalls == 1 and secureCalls == 0)",
+        )
+
+    def test_inventory_buttons_use_inherited_container_handler_without_secure_attributes(self):
+        button_factory = lua_function(
+            "function UB:GetContainerButton",
+            "local function SetCheckText",
+        )
+        self.assertIn('"ContainerFrameItemButtonTemplate"', button_factory)
+        self.assertNotIn("SecureActionButtonTemplate", button_factory)
+        self.assertNotIn("SetAttribute", button_factory)
+        self.assertNotIn('SetScript("OnClick"', button_factory)
+
+    def test_layout_assigns_inventory_bag_and_slot_to_blizzard_ids(self):
+        layout = lua_function("function UB:LayoutItems", "function UB:RefreshDisplay")
+        self.assertIn("b.bag = data.bag", layout)
+        self.assertIn("b.slot = data.slot", layout)
+        self.assertIn("parent:SetID(data.bag)", layout)
+        self.assertIn("b:SetID(data.slot)", layout)
+
+
 if __name__ == "__main__":
     unittest.main()
