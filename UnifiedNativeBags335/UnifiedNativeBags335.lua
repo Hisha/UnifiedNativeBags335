@@ -402,6 +402,23 @@ local function SavePosition(display)
     s[display.positionKey] = { point, relativePoint, x, y }
 end
 
+local function HandleInventoryItemRightClick(button)
+    if UB.bankOpen and UB.bankDisplay and UB.bankDisplay.view == "reagents" then
+        local native = _G.NativeReagents
+        if native and type(native.DepositInventoryItem) == "function" and
+            native.DepositInventoryItem(button.bag, button.slot) then
+            return
+        end
+    end
+
+    -- In banker/guild-bank/vendor contexts we need the stock context-sensitive
+    -- UseContainerItem behavior (move/sell). Ordinary world use/equip/learn
+    -- actions are performed by the button's SecureActionButtonTemplate action.
+    if UB.bankOpen or UB.guildBankOpen or (MerchantFrame and MerchantFrame:IsShown()) then
+        UseContainerItem(button.bag, button.slot)
+    end
+end
+
 function UB:GetCustomButton(display, index)
     display.customButtons = display.customButtons or {}
     local b = display.customButtons[index]
@@ -554,14 +571,7 @@ function UB:GetCustomButton(display, index)
         end
 
         if mouseButton == "RightButton" then
-            -- In banker/guild-bank/vendor contexts we need the stock
-            -- context-sensitive UseContainerItem behavior (move/sell).
-            -- Ordinary world use/equip/learn actions are performed by the
-            -- button's SecureActionButtonTemplate action instead, so addon
-            -- Lua never directly initiates a protected recipe/spell action.
-            if UB.bankOpen or UB.guildBankOpen or (MerchantFrame and MerchantFrame:IsShown()) then
-                UseContainerItem(button.bag, button.slot)
-            end
+            HandleInventoryItemRightClick(button)
             return
         else
             PickupContainerItem(button.bag, button.slot)
